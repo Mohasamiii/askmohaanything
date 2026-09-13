@@ -20,7 +20,7 @@
       box-sizing: border-box;
       margin: 0;
       padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
 
     body {
@@ -63,7 +63,7 @@
       margin-bottom: 20px;
     }
 
-    input[type="text"], textarea {
+    textarea {
       width: 100%;
       background: #0e1117;
       border: 1px solid var(--border);
@@ -72,16 +72,12 @@
       border-radius: 8px;
       font-size: 0.95rem;
       outline: none;
-      transition: border 0.2s ease;
-    }
-
-    input[type="text"]:focus, textarea:focus {
-      border-color: var(--accent);
-    }
-
-    textarea {
       resize: vertical;
       min-height: 110px;
+    }
+
+    textarea:focus, input[type="text"]:focus {
+      border-color: var(--accent);
     }
 
     button {
@@ -94,7 +90,6 @@
       font-weight: 600;
       font-size: 0.95rem;
       cursor: pointer;
-      transition: background 0.2s ease;
     }
 
     button:hover {
@@ -120,12 +115,16 @@
 
     .link-box input {
       flex: 1;
+      background: #0e1117;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px;
+      border-radius: 8px;
     }
 
     .copy-btn {
       width: auto;
       padding: 0 16px;
-      white-space: nowrap;
     }
 
     .inbox {
@@ -133,7 +132,7 @@
       display: flex;
       flex-direction: column;
       gap: 10px;
-      max-height: 250px;
+      max-height: 280px;
       overflow-y: auto;
     }
 
@@ -161,14 +160,18 @@
       display: none;
     }
   </style>
+
+  <!-- Firebase SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
 
   <div class="container">
-    <!-- View 1: Send a Question (When opening via shared link) -->
+    <!-- Send Question Section -->
     <div id="ask-view">
       <h1 id="recipient-heading">Ask a Question</h1>
-      <p class="subtext">Send an anonymous message. Your identity will remain secret.</p>
+      <p class="subtext">Send an anonymous message. Your identity remains secret.</p>
       
       <div class="input-group">
         <textarea id="question-input" placeholder="Type your secret question here..."></textarea>
@@ -177,65 +180,98 @@
       <p id="sent-status" class="status-msg">Sent! Your question has been delivered.</p>
     </div>
 
-    <!-- View 2: Dashboard (Generate Link & View Inbox) -->
+    <!-- Owner Dashboard Section -->
     <div id="owner-view">
       <div class="divider"></div>
       <div class="section-title">Your Share Link</div>
       <div class="link-box">
-        <input type="text" id="share-link" readonly placeholder="Enter username above..." />
+        <input type="text" id="share-link" readonly />
         <button class="copy-btn" id="copy-btn">Copy</button>
       </div>
 
       <div class="divider"></div>
       <div class="section-title">Inbox (Received Questions)</div>
       <div class="inbox" id="inbox-list">
-        <p class="subtext" style="text-align: left;">No questions received yet.</p>
+        <p class="subtext" style="text-align: left;">Loading inbox...</p>
       </div>
     </div>
   </div>
 
   <script>
+    // --- 1. REPLACE THIS WITH YOUR FIREBASE CONFIG ---
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // --- 2. User & URL Setup ---
     const urlParams = new URLSearchParams(window.location.search);
     const targetUser = urlParams.get('user');
 
-    const askView = document.getElementById('ask-view');
+    let ownerUsername = localStorage.getItem('anon_my_id');
+    if (!ownerUsername) {
+      ownerUsername = 'user_' + Math.random().toString(36).substring(2, 8);
+      localStorage.setItem('anon_my_id', ownerUsername);
+    }
+
+    // Determine target box to push questions to
+    const targetBox = targetUser || ownerUsername;
+
+    // UI Elements
     const recipientHeading = document.getElementById('recipient-heading');
     const questionInput = document.getElementById('question-input');
     const sendBtn = document.getElementById('send-btn');
     const sentStatus = document.getElementById('sent-status');
-
     const shareLinkInput = document.getElementById('share-link');
     const copyBtn = document.getElementById('copy-btn');
     const inboxList = document.getElementById('inbox-list');
 
-    // 1. Setup based on URL parameters
-    let currentUsername = targetUser || localStorage.getItem('anon_username');
-
-    if (!currentUsername) {
-      currentUsername = 'user_' + Math.random().toString(36).substring(2, 8);
-      localStorage.setItem('anon_username', currentUsername);
-    }
-
-    // Set shareable URL
+    // Build share link for the current device owner
     const baseUrl = window.location.origin + window.location.pathname;
-    const fullShareUrl = `${baseUrl}?user=${currentUsername}`;
-    shareLinkInput.value = fullShareUrl;
+    shareLinkInput.value = `${baseUrl}?user=${ownerUsername}`;
 
-    if (targetUser) {
+    if (targetUser && targetUser !== ownerUsername) {
       recipientHeading.textContent = `Ask @${targetUser} Anything`;
     } else {
       recipientHeading.textContent = `Ask Me Anything`;
     }
 
-    // 2. Load Inbox from LocalStorage
-    function loadInbox() {
-      const stored = JSON.parse(localStorage.getItem(`questions_${currentUsername}`) || '[]');
-      if (stored.length === 0) {
+    // --- 3. Send Question to Database ---
+    sendBtn.addEventListener('click', () => {
+      const text = questionInput.value.trim();
+      if (!text) return;
+
+      db.ref(`questions/${targetBox}`).push({
+        text: text,
+        timestamp: Date.now()
+      }).then(() => {
+        questionInput.value = '';
+        sentStatus.style.display = 'block';
+        setTimeout(() => { sentStatus.style.display = 'none'; }, 3000);
+      });
+    });
+
+    // --- 4. Listen for Live Inbox Updates ---
+    db.ref(`questions/${ownerUsername}`).on('value', (snapshot) => {
+      const data = snapshot.val();
+      if (!data) {
         inboxList.innerHTML = '<p class="subtext" style="text-align: left;">No questions received yet.</p>';
         return;
       }
+
       inboxList.innerHTML = '';
-      stored.reverse().forEach(q => {
+      const items = Object.values(data).sort((a, b) => b.timestamp - a.timestamp);
+
+      items.forEach(q => {
         const card = document.createElement('div');
         card.className = 'question-card';
         card.innerHTML = `
@@ -244,29 +280,9 @@
         `;
         inboxList.appendChild(card);
       });
-    }
-
-    // 3. Send Question Handler
-    sendBtn.addEventListener('click', () => {
-      const text = questionInput.value.trim();
-      if (!text) return;
-
-      const stored = JSON.parse(localStorage.getItem(`questions_${currentUsername}`) || '[]');
-      stored.push({
-        text: text,
-        timestamp: new Date().toISOString()
-      });
-
-      localStorage.setItem(`questions_${currentUsername}`, JSON.stringify(stored));
-      questionInput.value = '';
-      
-      sentStatus.style.display = 'block';
-      setTimeout(() => { sentStatus.style.display = 'none'; }, 3000);
-
-      loadInbox();
     });
 
-    // 4. Copy Link Handler
+    // Copy Button Handler
     copyBtn.addEventListener('click', () => {
       shareLinkInput.select();
       navigator.clipboard.writeText(shareLinkInput.value);
@@ -274,20 +290,11 @@
       setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
     });
 
-    // Utility: prevent basic XSS script injections
     function escapeHtml(str) {
-      return str.replace(/[&<>"']/g, function(m) {
-        return {
-          '&': '&amp;',
-          '<': '&lt;',
-          '>': '&gt;',
-          '"': '&quot;',
-          "'": '&#039;'
-        }[m];
-      });
+      return str.replace(/[&<>"']/g, m => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      }[m]));
     }
-
-    loadInbox();
   </script>
 </body>
 </html>
